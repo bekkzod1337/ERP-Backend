@@ -11,7 +11,7 @@ export function createAnalyticsAdminRouter({ pool, audit, asDate, dateRange, nor
       const selectedRegion = normalizeRegion(req.query.region);
       if (selectedRegion) { values.push(selectedRegion); regionFilter = ` AND s.region = $${values.length}`; }
       const { rows } = await pool.query(`SELECT s.region, COUNT(DISTINCT s.sale_key)::int fact,
-        COALESCE(ROUND(MAX(p.plan)::numeric / EXTRACT(DAY FROM (date_trunc('month', $1::date) + interval '1 month - 1 day')))::int, 0) plan
+        COALESCE(MAX(p.plan), 0)::int plan
         FROM sales s JOIN import_files i ON i.id = s.import_file_id AND i.source = 'msms-api'
         LEFT JOIN sales_plans p ON p.scope_type = 'region' AND p.scope_key = s.region
         AND p.period_start = date_trunc('month', $1::date)::date

@@ -5,7 +5,7 @@ import cron from "node-cron";
 import { pool, migrate } from "./db.js";
 import { config } from "./config.js";
 import { EventEmitter } from "node:events";
-import { getReportImage, sendHourlyReport, sendReport, startTelegramBot } from "./telegram.js";
+import { getReportImage, sendHourlyReport, sendReport, sendSimVerificationCode, startTelegramBot } from "./telegram.js";
 import { createHealthRouter } from "./routes/health.js";
 import { createTelegramRouter } from "./routes/telegram.js";
 import { createSimcardsRouter } from "./routes/simcards.js";
@@ -17,12 +17,12 @@ import { eachDay, isXlsxBuffer, msmsResponseError, saveWorkbook } from "./servic
 const app = express();
 const updates = new EventEmitter();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
-app.use(cors({ origin: config.frontendUrl }));
+app.use(cors({ origin: config.frontendUrl, credentials: true }));
 app.use(express.json());
 
 app.use(createHealthRouter({ pool }));
-app.use(createTelegramRouter({ config, getReportImage, sendReport }));
-app.use(createSimcardsRouter({ pool, upload, audit, iccRange, validIcc }));
+app.use(createTelegramRouter({ config, pool, getReportImage, sendReport, regions, localToday }));
+app.use(createSimcardsRouter({ pool, upload, audit, iccRange, validIcc, sendSimVerificationCode }));
 app.use(createAnalyticsAdminRouter({ pool, audit, asDate, dateRange, normalizeRegion, regions, tokenRegions }));
 
 app.get("/api/events", (req, res) => {
@@ -78,6 +78,29 @@ app.post("/api/simcards/import", upload.single("file"), async (req, res, next) =
   } catch (error) { await client.query("ROLLBACK"); next(error); } finally { client.release(); }
 });
 
+app.post("/api/simcards/import/preview", upload.single("file"), async (req, res, next) => {
+  if (!req.file) return res.status(400).json({ error: "Excel fayl yuboring" });
+  try {
+    const ExcelJS = (await import("exceljs")).default;
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(req.file.buffer);
+    const sheet = workbook.worksheets[0];
+    if (!sheet) return res.status(400).json({ error: "Excel varaq topilmadi" });
+    const header = sheet.getRow(1).values.map(value => String(value || "").toLowerCase().trim());
+    const iccIndex = Math.max(1, header.findIndex(value => value === "icc" || value.includes("icc")) + 1);
+    const values = [];
+    let invalid = 0;
+    for (let rowNumber = 2; rowNumber <= sheet.rowCount; rowNumber += 1) {
+      const icc = String(sheet.getRow(rowNumber).getCell(iccIndex).value ?? "").replace(/\.0$/, "").trim();
+      if (!icc) continue;
+      if (!validIcc(icc)) invalid += 1;
+      else values.push(icc);
+    }
+    const duplicates = values.length ? await pool.query("SELECT COUNT(*)::int count FROM simcards WHERE icc = ANY($1::text[])", [values]) : { rows: [{ count: 0 }] };
+    res.json({ total: values.length + invalid, valid: values.length, invalid, duplicates: duplicates.rows[0].count, newCards: values.length - duplicates.rows[0].count });
+  } catch (error) { next(error); }
+});
+
 async function syncRegionDay(region, token, day) {
   const url = new URL(config.msmsBaseUrl);
   url.search = new URLSearchParams({ DateStart: day, DateEnd: day, FilterText: "", OrderTypeAlias: "ServiceOrder.OrderType.AddMobileService", OrderOwnerFilter: region === "Samarqand" ? "User.Permissions.salesPoint" : "User.Permissions.dealer", CheckIdentityMethodId: "" }).toString();
@@ -128,14 +151,14 @@ app.use((error, _req, res, _next) => { console.error(error); res.status(error.st
 async function refreshFromMsms() {
   if (syncInProgress) { console.warn("Soatlik sync hali tugamagan, yangi sync o'tkazib yuborildi."); return; }
   syncInProgress = true;
-  const [monthStart, today] = currentMonthRange();
+  const today = localToday();
   try {
     const { rows } = await pool.query("SELECT region, token FROM api_tokens WHERE expires_at IS NULL OR expires_at > NOW()");
-    for (const row of rows) { try { await syncRegion(row.region, row.token, monthStart, today); } catch (error) { console.error(`MSMS ${row.region} yangilanmadi:`, error.message); } }
+    for (const row of rows) { try { await syncRegion(row.region, row.token, today, today); } catch (error) { console.error(`MSMS ${row.region} yangilanmadi:`, error.message); } }
   } finally { syncInProgress = false; }
 }
 
-cron.schedule("0 * * * *", async () => {
+cron.schedule("55 * * * *", async () => {
   try { await refreshFromMsms(); await sendHourlyReport(); } catch (error) { console.error("Soatlik sync yoki Telegram hisobot xatosi:", error.message); }
 }, { timezone: "Asia/Tashkent" });
 

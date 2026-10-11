@@ -14,14 +14,19 @@ const regionNames = new Map([
   ["джизакская обл.", "Jizzax"],
 ]);
 
+function formatTashkentDate(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+  return date.toLocaleDateString("en-CA", { timeZone: "Asia/Tashkent" });
+}
+
 function dateValue(value) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return value.toISOString().slice(0, 10);
+    return formatTashkentDate(value);
   }
   if (typeof value === "number" && Number.isFinite(value)) {
     const excelEpoch = new Date(Date.UTC(1899, 11, 30));
     excelEpoch.setUTCDate(excelEpoch.getUTCDate() + value);
-    return excelEpoch.toISOString().slice(0, 10);
+    return formatTashkentDate(excelEpoch);
   }
   const text = String(value ?? "").trim();
   const match = text.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
@@ -51,7 +56,7 @@ export async function parseWorkbook(buffer, fileName, importFileId, sourceRegion
       const contractNumber = String(value(row, 12)).trim();
       const saleKey = `${icc}|${login}|${contractNumber}|${phone}`.toLowerCase();
       const connectedDate = dateValue(connectedAt);
-      rows.push({ importFileId, orderNo: String(value(row, 0)), standard: String(value(row, 1)), region, dealerName: String(value(row, 3)), salesPoint: String(value(row, 4)), clientName: String(value(row, 5)), documentType: String(value(row, 6)), documentNumber: String(value(row, 7)), birthDate: String(value(row, 8)), tariffName: String(value(row, 9)), phone, icc, contractNumber, connectedAt: connectedDate, operatorName: String(value(row, 14)), login, payment: Number(value(row, 16)) || 0, status, identificationMethod: String(value(row, 18)), saleDate: connectedDate || new Date().toISOString().slice(0, 10), saleKey });
+      rows.push({ importFileId, orderNo: String(value(row, 0)), standard: String(value(row, 1)), region, dealerName: String(value(row, 3)), salesPoint: String(value(row, 4)), clientName: String(value(row, 5)), documentType: String(value(row, 6)), documentNumber: String(value(row, 7)), birthDate: String(value(row, 8)), tariffName: String(value(row, 9)), phone, icc, contractNumber, connectedAt: connectedDate, operatorName: String(value(row, 14)), login, payment: Number(value(row, 16)) || 0, status, identificationMethod: String(value(row, 18)), saleDate: connectedDate || formatTashkentDate(new Date()), saleKey });
     });
   }
   return { fileName, rows };

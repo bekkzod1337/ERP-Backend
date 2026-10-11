@@ -17,6 +17,7 @@ export const config = {
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
   telegramBotId: process.env.TELEGRAM_BOT_ID,
   telegramChatId: process.env.TELEGRAM_CHAT_ID,
+  telegramChatIds: (process.env.TELEGRAM_CHAT_ID || "").split(/[,\s]+/).map(value => value.trim()).filter(Boolean),
   msmsBaseUrl: process.env.MSMS_BASE_URL || "https://msms.uztelecom.uz/msmsapi/serviceorder/reestr",
   msmsTokenHeader: process.env.MSMS_TOKEN_HEADER || "Authorization",
 };

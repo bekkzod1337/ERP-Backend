@@ -5,7 +5,7 @@ export async function audit(client, action, entityType, entityId, req, details =
       action,
       entityType,
       entityId == null ? null : String(entityId),
-      req?.user?.name || req?.body?.operatorName || req?.body?.operator || req?.ip || "system",
+      req?.simUser?.login || req?.user?.name || req?.body?.operatorName || req?.body?.operator || req?.ip || "system",
       details,
     ],
   );

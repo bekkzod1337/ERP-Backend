@@ -102,10 +102,19 @@ export async function migrate() {
       id SERIAL PRIMARY KEY, region TEXT UNIQUE NOT NULL, token TEXT NOT NULL,
       expires_at TIMESTAMPTZ, updated_at TIMESTAMPTZ DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS telegram_recipients (
+      id SERIAL PRIMARY KEY, chat_id TEXT UNIQUE NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS telegram_daily_plans (
+      plan_date DATE NOT NULL, region TEXT NOT NULL, plan INT NOT NULL CHECK (plan >= 0),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY (plan_date, region)
+    );
     ALTER TABLE dealers ADD COLUMN IF NOT EXISTS phone TEXT;
     ALTER TABLE dealers ADD COLUMN IF NOT EXISTS full_name TEXT;
     ALTER TABLE dealers ADD COLUMN IF NOT EXISTS sim_logins TEXT;
     ALTER TABLE dealers ADD COLUMN IF NOT EXISTS sim_limit INT NOT NULL DEFAULT 0 CHECK (sim_limit >= 0);
+    ALTER TABLE dealers ADD COLUMN IF NOT EXISTS telegram_chat_id TEXT;
     CREATE TABLE IF NOT EXISTS sim_receipts (
       id BIGSERIAL PRIMARY KEY, icc_start NUMERIC(18,0) NOT NULL, icc_end NUMERIC(18,0) NOT NULL,
       received_at DATE NOT NULL DEFAULT CURRENT_DATE, operator_name TEXT, note TEXT,
@@ -123,8 +132,11 @@ export async function migrate() {
     CREATE TABLE IF NOT EXISTS telegram_verifications (
       id BIGSERIAL PRIMARY KEY, simcard_id BIGINT NOT NULL REFERENCES simcards(id) ON DELETE CASCADE,
       code TEXT NOT NULL, sent_to TEXT, verified BOOLEAN NOT NULL DEFAULT FALSE,
+      attempts INT NOT NULL DEFAULT 0, expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + interval '5 minutes'),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), verified_at TIMESTAMPTZ
     );
+    ALTER TABLE telegram_verifications ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
+    ALTER TABLE telegram_verifications ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + interval '5 minutes');
     CREATE INDEX IF NOT EXISTS telegram_verifications_sim_idx ON telegram_verifications(simcard_id);
     CREATE TABLE IF NOT EXISTS sim_issues (
       id BIGSERIAL PRIMARY KEY, dealer_id INT NOT NULL REFERENCES dealers(id), icc_start NUMERIC(18,0) NOT NULL,
@@ -136,8 +148,17 @@ export async function migrate() {
       id BIGSERIAL PRIMARY KEY, action TEXT NOT NULL, entity_type TEXT, entity_id TEXT,
       actor TEXT, details JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS sim_status_history (
+      id BIGSERIAL PRIMARY KEY, simcard_id BIGINT NOT NULL REFERENCES simcards(id) ON DELETE CASCADE,
+      old_status TEXT, new_status TEXT NOT NULL, actor TEXT, note TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS sim_status_history_sim_idx ON sim_status_history(simcard_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs(created_at DESC);
   `);
+  for (const chatId of config.telegramChatIds) {
+    await pool.query("INSERT INTO telegram_recipients(chat_id) VALUES($1) ON CONFLICT(chat_id) DO NOTHING", [chatId]);
+  }
   await pool.query("ALTER TABLE sales DROP CONSTRAINT IF EXISTS sales_sale_key_key");
   await pool.query("DROP INDEX IF EXISTS sales_sale_key_unique");
   await pool.query(`

@@ -8,14 +8,14 @@ const regions = ["Samarqand", "Andijon", "Namangan", "Farg'ona", "Qashqadaryo", 
 const russianRegions = { Samarqand: "Самаркандская обл.", Andijon: "Андижанская обл.", Namangan: "Наманганская обл.", "Farg'ona": "Ферганская обл.", Qashqadaryo: "Кашкадарьинская обл.", Surxondaryo: "Сурхандарьинская обл.", Xorazm: "Хорезмская обл.", Jizzax: "Джизакская обл." };
 
 function reportSvg(rows, date, hour) {
-  const width = 1470;
+  const width = 1500;
   const rowHeight = 52;
   const headerHeight = 165;
   const height = headerHeight + (rows.length + 1) * rowHeight + 12;
   const columns = [0, 420, 570, 720, 870, 1020, 1170, 1320, 1500];
   const headerLines = [
-    `<text x="825" y="32" class="date">${escapeXml(date)}</text>`,
-    `<text x="495" y="78" class="group">дневной план</text><text x="1200" y="78" class="group">до ${escapeXml(hour)}</text>`,
+    `<text x="${width / 2}" y="32" class="date">${escapeXml(date)}</text>`,
+    `<text x="495" y="78" class="group">дневной план</text><text x="1200" y="78" class="group">до ${escapeXml(hour + 1)}</text>`,
     `<text x="210" y="126" class="head">Регион</text><text x="495" y="126" class="head">ПЛАН</text><text x="645" y="126" class="head">ФАКТ</text><text x="795" y="105" class="head">Разница</text><text x="795" y="123" class="small-head">факта от плана</text><text x="795" y="140" class="small-head">кол-ва</text><text x="945" y="126" class="head">ПЛАН</text><text x="1095" y="126" class="head">ФАКТ</text><text x="1245" y="105" class="head">Разница</text><text x="1245" y="123" class="small-head">факта от плана</text><text x="1245" y="140" class="small-head">кол-ва</text><text x="1410" y="105" class="head">Разница</text><text x="1410" y="123" class="small-head">факта от плана %</text>`,
   ].join("");
   const lines = [40, 84, headerHeight, ...Array.from({ length: rows.length + 2 }, (_, index) => headerHeight + index * rowHeight)].map(y => `<line x1="0" y1="${y}" x2="${width}" y2="${y}" class="line"/>`).join("");
@@ -34,6 +34,19 @@ function reportSvg(rows, date, hour) {
 }
 
 const localDate = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Tashkent" }).format(new Date());
+const tashkentHour = () => Number(new Intl.DateTimeFormat("en-US", {
+  timeZone: "Asia/Tashkent",
+  hour: "2-digit",
+  hourCycle: "h23",
+  hour12: false,
+}).formatToParts(new Date()).find(part => part.type === "hour")?.value || 0);
+const normalizeReportHour = reportHour => {
+  const hour = reportHour === undefined || reportHour === null || reportHour === "" ? tashkentHour() : Number(reportHour);
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
+    throw new RangeError(`Hisobot soati 00-23 oralig'ida bo'lishi kerak: ${reportHour}`);
+  }
+  return hour;
+};
 const reportDate = date => {
   const [year, month, day] = date.split("-");
   return `${Number(month)}/${Number(day)}/${year}`;
@@ -45,12 +58,18 @@ function completedPlanShare(hour) {
   return Object.entries(hourlyShares).reduce((total, [shareHour, share]) => Number(shareHour) <= hour ? total + share : total, 0);
 }
 
-async function buildReport() {
+async function buildReport(reportHour) {
   const date = localDate();
-  const { rows } = await pool.query(`SELECT r.region, ROUND(COALESCE(p.plan,0)::numeric / EXTRACT(DAY FROM (date_trunc('month',$2::date) + interval '1 month - 1 day')))::int plan, COUNT(s.id)::int fact FROM unnest($1::text[]) r(region) LEFT JOIN sales s ON s.region=r.region AND s.sale_date=$2::date LEFT JOIN sales_plans p ON p.scope_type='region' AND p.scope_key=r.region AND p.period_start=date_trunc('month',$2::date)::date GROUP BY r.region,p.plan ORDER BY r.region`, [regions, date]);
-  const hourParts = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Tashkent", hour: "2-digit", hour12: false }).formatToParts(new Date());
-  const hour = hourParts.find(part => part.type === "hour")?.value || "00";
-  const planShare = completedPlanShare(Number(hour));
+  const { rows } = await pool.query(`SELECT r.region,
+    COALESCE(dp.plan, ROUND(COALESCE(p.plan,0)::numeric / EXTRACT(DAY FROM (date_trunc('month',$2::date) + interval '1 month - 1 day')))::int)::int plan,
+    COUNT(s.id)::int fact
+    FROM unnest($1::text[]) r(region)
+    LEFT JOIN sales s ON s.region=r.region AND s.sale_date=$2::date
+    LEFT JOIN sales_plans p ON p.scope_type='region' AND p.scope_key=r.region AND p.period_start=date_trunc('month',$2::date)::date
+    LEFT JOIN telegram_daily_plans dp ON dp.region=r.region AND dp.plan_date=$2::date
+    GROUP BY r.region,dp.plan,p.plan ORDER BY r.region`, [regions, date]);
+  const hour = normalizeReportHour(reportHour);
+  const planShare = completedPlanShare(Number(hour) + 1);
   const enriched = rows.map(row => {
     const hourPlan = Math.round(Number(row.plan) * planShare);
     return { ...row, dayDiff: Number(row.fact) - Number(row.plan), hourPlan, hourDiff: Number(row.fact) - hourPlan, hourPercent: hourPlan ? (Number(row.fact) * 100 / hourPlan - 100).toFixed(2) : "0.00" };
@@ -58,11 +77,20 @@ async function buildReport() {
   return { image: await sharp(Buffer.from(reportSvg(enriched, reportDate(date), hour))).png().toBuffer(), date };
 }
 
-export async function sendReport(chatId = config.telegramChatId) {
-  if (!config.telegramBotId || !chatId) return false;
-  const { image, date } = await buildReport();
+export async function sendReport(chatIds = config.telegramChatIds, reportHour) {
+  const recipients = Array.isArray(chatIds) ? chatIds : String(chatIds || "").split(/[,\s]+/);
+  const uniqueRecipients = [...new Set(recipients.map(value => String(value).trim()).filter(Boolean))];
+  if (!config.telegramBotId || !uniqueRecipients.length) return false;
+  const { image, date } = await buildReport(reportHour);
   const bot = new Telegraf(config.telegramBotId);
-  await bot.telegram.sendPhoto(chatId, { source: image }, { caption: `Telecom savdo hisoboti: ${date}` });
+  for (const chatId of uniqueRecipients) await bot.telegram.sendPhoto(chatId, { source: image });
+  return true;
+}
+
+export async function sendSimVerificationCode(chatId, code, dealerName, count) {
+  if (!config.telegramBotId || !chatId) return false;
+  const bot = new Telegraf(config.telegramBotId);
+  await bot.telegram.sendMessage(chatId, `SIM-karta tasdiqlash kodi: ${code}\nDiler: ${dealerName}\nMiqdor: ${count} ta\nKod 5 daqiqa amal qiladi.`);
   return true;
 }
 
@@ -70,7 +98,10 @@ export async function getReportImage() {
   return (await buildReport()).image;
 }
 
-export const sendHourlyReport = () => sendReport();
+export const sendHourlyReport = async () => {
+  const { rows } = await pool.query("SELECT chat_id FROM telegram_recipients ORDER BY id");
+  return sendReport(rows.map(row => row.chat_id), tashkentHour());
+};
 
 export function startTelegramBot() {
   if (!config.telegramBotId) return null;
